@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"path"
@@ -16,6 +15,8 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 )
+
+var waitCh = make(chan int, 20)
 
 func main() {
 	defer func() {
@@ -42,7 +43,8 @@ func findPage(_url string) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+		logger.Error(fmt.Sprintf("findPage status code error: %d %s \n url: %s", res.StatusCode, res.Status, _url))
+		return
 	}
 
 	// Load the HTML document
@@ -65,7 +67,8 @@ func findPage(_url string) {
 }
 
 func findItem(all int) {
-	for i := 1; i <= 1; i++ {
+	for i := 1; i <= all; i++ {
+		waitCh <- 1
 		go func(p int) {
 			find(p)
 		}(i)
@@ -83,13 +86,18 @@ func dealItem(s *goquery.Selection) {
 		fmt.Println("don't find src")
 	}
 	title := a.Text()
-
+	if checkFileIsExist("./res/" + title + "/info.json") {
+		<-waitCh
+		return
+	}
 	err := os.MkdirAll("./res/"+title, os.ModePerm)
 	if err != nil {
 		logger.Error(err.Error())
 	}
 	ext := path.Ext(img)
+
 	writeImg(img, "./res/"+title+"/title"+ext)
+	waitCh <- 1
 	go itemInfo("http://www.huhudm.com"+url, title)
 }
 
@@ -99,13 +107,15 @@ func itemInfo(url string, name string) {
 		if err != nil {
 			logger.Error("func itemInfo \n" + url + "\n" + err.Error())
 		}
+		<-waitCh
 	}()
 	if err != nil {
 		return
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+		logger.Error(fmt.Sprintf("itemInfo status code error: %d %s \n url: %s", res.StatusCode, res.Status, url))
+		return
 	}
 
 	// Load the HTML document
@@ -141,6 +151,7 @@ func itemInfo(url string, name string) {
 		if i == 7 {
 			des = s.Text()
 			des = strings.ReplaceAll(des, "简介:", "")
+			des = strings.ReplaceAll(des, "\n", "")
 			// fmt.Println(des)
 		}
 	})
@@ -148,18 +159,11 @@ func itemInfo(url string, name string) {
 	if err != nil {
 		return
 	}
-	_, err = io.WriteString(f, fmt.Sprintf(`{
-		"title": "%s",
-		"author": "%s",
-		"status": "%s",
-		"volume": "%s",
-		"des":"%s"
-	}`, name, author, status, volume, des)) //写入文件(字符串)
-	if err != nil {
-		return
-	}
 
-	doc.Find(".cVolUl li").Each(func(i int, s *goquery.Selection) {
+	var list = "{"
+	lis := doc.Find(".cVolUl li")
+	fmt.Println(lis.Length())
+	lis.Each(func(i int, s *goquery.Selection) {
 		nd := s.Find("a")
 		_url, ok := nd.Attr("href")
 		if !ok {
@@ -169,13 +173,33 @@ func itemInfo(url string, name string) {
 		if !ok {
 			return
 		}
-		title = strings.ReplaceAll(title, name+" ", "")
+		reg := regexp.MustCompile(`.+ `)
+		title = reg.ReplaceAllString(title, "")
+		// title = strings.ReplaceAll(title, name+" ", "")
 		err := os.MkdirAll("./res/"+name+"/"+title, os.ModePerm)
 		if err != nil {
 			logger.Error(err.Error())
 		}
-		go findVolume("http://www.huhudm.com"+_url, "./res/"+name+"/"+title)
+		if i == 0 {
+			list = list + (`"./res/` + name + "/" + title + `":"` + _url + `"`)
+		} else {
+			list = list + (`,"./res/` + name + "/" + title + `":"` + _url + `"`)
+		}
+		// go findVolume("http://www.huhudm.com"+_url, "./res/"+name+"/"+title)
 	})
+	list += "}"
+	_, err = io.WriteString(f, fmt.Sprintf(`{
+		"title": "%s",
+		"author": "%s",
+		"status": "%s",
+		"volume": "%s",
+		"des":"%s",
+		"list":%s
+	}`, name, author, status, volume, des, list)) //写入文件(字符串)
+	fmt.Println(name + " ok!")
+	if err != nil {
+		return
+	}
 }
 
 func findVolume(url string, _path string) {
@@ -190,7 +214,8 @@ func findVolume(url string, _path string) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+		logger.Error(fmt.Sprintf("findVolume status code error: %d %s \n url: %s", res.StatusCode, res.Status, url))
+		return
 	}
 
 	// Load the HTML document
@@ -206,6 +231,7 @@ func findVolume(url string, _path string) {
 		return
 	}
 	for i := 1; i <= c; i++ {
+		// waitCh <- 1
 		go singlePage(url, i, _path)
 	}
 }
@@ -225,7 +251,8 @@ func singlePage(url string, page int, _path string) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+		logger.Error(fmt.Sprintf("singlePage status code error: %d %s \n url: %s", res.StatusCode, res.Status, url))
+		return
 	}
 
 	// Load the HTML document
@@ -249,13 +276,15 @@ func find(page int) {
 		if err != nil {
 			logger.Error("func find \n" + _url + "\n" + err.Error())
 		}
+
 	}()
 	if err != nil {
 		return
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		log.Fatalf("status code error: %d %s", res.StatusCode, res.Status)
+		logger.Error(fmt.Sprintf("find status code error: %d %s \n url: %s", res.StatusCode, res.Status, _url))
+		return
 	}
 
 	// Load the HTML document
@@ -263,20 +292,23 @@ func find(page int) {
 	if err != nil {
 		return
 	}
-
+	<-waitCh
 	// Find the review items
 	doc.Find(".cComicList li").Each(func(i int, s *goquery.Selection) {
 		// For each item found, get the band and title
+		waitCh <- 1
 		go dealItem(s)
 	})
 }
 
 func writeImg(url string, path string) {
+	// fmt.Println(url)
 	res, err := http.Get(url)
 	defer func() {
 		if err != nil {
 			logger.Error("func writeImg \n" + url + "\n" + err.Error())
 		}
+		<-waitCh
 	}()
 	if err != nil {
 		return
@@ -286,7 +318,8 @@ func writeImg(url string, path string) {
 	reader := bufio.NewReaderSize(res.Body, 32*1024)
 	var file *os.File
 	if checkFileIsExist(path) {
-		file, err = os.OpenFile(path, os.O_APPEND, 0666) //打开文件
+		return
+		// file, err = os.OpenFile(path, os.O_APPEND, 0666) //打开文件
 	} else {
 		file, err = os.Create(path)
 	}
@@ -298,7 +331,8 @@ func writeImg(url string, path string) {
 	writer := bufio.NewWriter(file)
 
 	written, _ := io.Copy(writer, reader)
-	fmt.Printf("Total length: %d; path: %s", written, path)
+
+	fmt.Printf("Total length: %d; path: %s \n", written, path)
 }
 
 /**
