@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"path"
@@ -18,16 +20,21 @@ import (
 
 var waitCh = make(chan int, 20)
 
+type imgContrast [][2]string
+
 func main() {
 	defer func() {
 		if p := recover(); p != nil {
-			// fmt.Println(p)
+			fmt.Println(p)
 			logger.Error(p.(string))
 		}
 	}()
 	// itemInfo("http://www.huhudm.com/huhu31897.html", "Dr.STONE")
 	// singlePage("http://www.huhudm.com/hu353720/1.html?s=6", 1, "./res/Dr.STONE")
-	findPage("http://www.huhudm.com/comic/")
+	// load volume
+	// findPage("http://www.huhudm.com/comic/")
+	// load image
+	onlyLoadImg()
 	select {}
 }
 
@@ -86,7 +93,7 @@ func dealItem(s *goquery.Selection) {
 		fmt.Println("don't find src")
 	}
 	title := a.Text()
-	if checkFileIsExist("./res/" + title + "/info.json") {
+	if checkFileIsExist("./res/"+title+"/info.json") != 0 {
 		<-waitCh
 		return
 	}
@@ -302,14 +309,23 @@ func find(page int) {
 }
 
 func writeImg(url string, path string) {
-	// fmt.Println(url)
-	res, err := http.Get(url)
+	// fmt.Println(url + " :: " + path)
+	var err error
 	defer func() {
 		if err != nil {
 			logger.Error("func writeImg \n" + url + "\n" + err.Error())
 		}
 		<-waitCh
 	}()
+	cf := checkFileIsExist(path)
+	if cf == 1 {
+		return
+		// file, err = os.OpenFile(path, os.O_APPEND, 0666) //打开文件
+	}
+	// if url != "" {
+	// 	return
+	// }
+	res, err := http.Get(url)
 	if err != nil {
 		return
 	}
@@ -317,13 +333,11 @@ func writeImg(url string, path string) {
 	// 获得get请求响应的reader对象
 	reader := bufio.NewReaderSize(res.Body, 32*1024)
 	var file *os.File
-	if checkFileIsExist(path) {
-		return
-		// file, err = os.OpenFile(path, os.O_APPEND, 0666) //打开文件
+	if cf == -1 {
+		file, err = os.OpenFile(path, os.O_APPEND, 0666) //打开文件
 	} else {
 		file, err = os.Create(path)
 	}
-
 	if err != nil {
 		return
 	}
@@ -335,13 +349,83 @@ func writeImg(url string, path string) {
 	fmt.Printf("Total length: %d; path: %s \n", written, path)
 }
 
+func onlyLoadImg() {
+	currentPath, err := os.Getwd()
+	fmt.Println("currentPath :: " + currentPath)
+	readNeedLoadImg(path.Join(currentPath, "loaded"))
+	if err != nil {
+		fmt.Println(err)
+	}
+}
+func readNeedLoadImg(absDir string) {
+	fmt.Println("absDir :: " + absDir)
+	// table := make(map[string]imgContrast)
+	dir, err := os.Open(absDir)
+	if err != nil {
+		panic("readNeedLoadImg os.Open error : " + err.Error())
+	}
+	defer dir.Close()
+
+	files, err := dir.Readdir(-1)
+	if err != nil {
+		panic("readNeedLoadImg Readdir error : " + err.Error())
+	}
+	// fmt.Println(files[0].Name())
+	for _, file := range files {
+		var imgc imgContrast
+		err = parseJSON(path.Join(absDir, file.Name()), &imgc)
+		if err != nil {
+			panic("readNeedLoadImg parseJSON error : " + err.Error())
+		}
+		for _, img := range imgc {
+			waitCh <- 1
+			go writeImg(img[0], img[1])
+		}
+	}
+
+	// table[files[0].Name()] = imgc
+	// fmt.Println(table)
+	// fmt.Println(len(files))
+	// for _, file := range files {
+	// 	// fmt.Println(file.Name())
+	// 	var conf interface{}
+	// 	err = parseJSON(path.Join(absDir, file.Name()), &conf)
+	// 	if err != nil {
+	// 		panic("loadConfig parseJSON error : " + err.Error())
+	// 	}
+	// 	fmt.Println(path.Join(rd, file.Name()), Table[path.Join(rd, file.Name())])
+	// 	Table[path.Join(rd, file.Name())] = conf
+	// }
+}
+
+// 读取文件并解析
+func parseJSON(p string, c interface{}) error {
+	file, err := os.Open(p)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		return err
+	}
+
+	err = json.Unmarshal(content, c)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 /**
  * 判断文件是否存在  存在返回 true 不存在返回false
  */
-func checkFileIsExist(filename string) bool {
-	var exist = true
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		exist = false
+func checkFileIsExist(filename string) int {
+	var exist = 1
+	if f, err := os.Stat(filename); os.IsNotExist(err) {
+		exist = 0
+	} else if f.Size() < 50*1024 && f.Size() != 36974 {
+		exist = -1
 	}
 	return exist
 }
